@@ -1,68 +1,78 @@
-Appendix B: R Code for Meta-Regression Analysis
+###############################################################################
+#  PhD – Chapter 4  ·  Meta-regression of European Waste-Service Values
+#  Full, reproducible workflow
+###############################################################################
 
-# ------------------------------------------------------------
-# Load required packages
-# ------------------------------------------------------------
-library(readxl)
-library(car)
-library(lmtest)
-library(sandwich)
-library(gvlma)
+# 0. Package setup ------------------------------------------------------------
+pkgs <- c("readxl", "lmtest", "sandwich", "car", "strucchange",
+          "gvlma",  "broom", "flextable", "officer")
+to_install <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
+if (length(to_install)) install.packages(to_install)
 
-# ------------------------------------------------------------
-# Load and inspect dataset
-# ------------------------------------------------------------
-data_path <- "path/to/Waste_Treatment_Dataset.xlsx"
-data_full <- read_excel(data_path, sheet = 1)
+lapply(pkgs, library, character.only = TRUE)
 
-# ------------------------------------------------------------
-# Initial model estimation
-# ------------------------------------------------------------
-model_raw <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
-                Population_Density + Average_Farm_Size +
-                Publication_Year, data = data_full)
+# 1. Read raw ESVD subset ------------------------------------------------------
+DATA_PATH <- "data/ESVD_Europe_raw.xlsx"   # <- adjust if needed
+d_raw     <- read_excel(DATA_PATH, sheet = 1)
 
-# Outlier detection using Cook's distance
-cook_raw <- cooks.distance(model_raw)
-cutoff_1 <- 4 / nrow(data_full)
-data_trim <- data_full[cook_raw < cutoff_1, ]
+# 2. Two-stage influence diagnostics (Cook’s distance) -------------------------
+m0 <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
+         Population_Density + Average_Farm_Size + Publication_Year,
+         data = d_raw)
 
-# ------------------------------------------------------------
-# Trimmed model with robust standard errors
-# ------------------------------------------------------------
-model_trim <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
-                 Population_Density + Average_Farm_Size +
-                 Publication_Year, data = data_trim)
+cook0  <- cooks.distance(m0)
+keep_1 <- cook0 < 4 / nrow(d_raw)          # drop 1st-pass outliers (n = 47)
+d1     <- d_raw[keep_1, ]
 
-# Robust HC1 standard errors
-coeftest(model_trim, vcov = vcovHC(model_trim, type = "HC1"))
+m1   <- update(m0, data = d1)
+cook1 <- cooks.distance(m1)
+keep_2 <- cook1 < 4 / nrow(d1)             # drop 2nd-pass outliers (n = 44)
+d2     <- d1[keep_2, ]                     # final dataset used in paper (n = 52)
 
-# ------------------------------------------------------------
-# Assumption diagnostics
-# ------------------------------------------------------------
-# Normality of residuals
-shapiro.test(residuals(model_trim))
-qqnorm(residuals(model_trim)); qqline(residuals(model_trim), col = 2)
+# 3. Main meta-regression (HC1 robust) ----------------------------------------
+m <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
+        Population_Density + Average_Farm_Size + Publication_Year,
+        data = d2)
 
-# Homoskedasticity
-bptest(model_trim)
-ncvTest(model_trim)
+rob_vcov <- vcovHC(m, "HC1")
+tbl_coef <- tidy(m, conf.int = TRUE, vcov = rob_vcov)
 
-# Independence
-dwtest(model_trim)
+wald_F <- waldtest(m, vcov = rob_vcov, test = "F")      # joint significance
 
-# Multicollinearity
-vif(model_trim)
+# 4. Diagnostics --------------------------------------------------------------
+diag <- list(
+  # Variance
+  BP   = bptest(m)$p.value,
+  NCV  = ncvTest(m)$p,
+  # Independence
+  DW   = dwtest(m)$p.value,
+  # Normality (raw + log specification)
+  SW_raw = shapiro.test(residuals(m))$p.value,
+  SW_log = shapiro.test(residuals(
+             lm(log(Value) ~ GDP_per_Capita + OrganicLandShare +
+                             Population_Density + Average_Farm_Size +
+                             Publication_Year, data = d2)))$p.value,
+  # Linearity (Rainbow default + 50 % window)
+  RB    = sctest(m, type = "Rainbow")$p.value,
+  RB_50 = sctest(m, type = "Rainbow", frac = 0.5)$p.value,
+  # Multicollinearity
+  VIF   = vif(m)
+)
 
-# Linearity of predictors
-crPlots(model_trim)
+# 5. Optional: export Word / CSV tables ---------------------------------------
+dir.create("output", showWarnings = FALSE)
 
-# ------------------------------------------------------------
-# Log-transformed model to address residual normality
-# ------------------------------------------------------------
-model_log <- lm(log(Value) ~ GDP_per_Capita + OrganicLandShare +
-                Population_Density + Average_Farm_Size +
-                Publication_Year, data = data_trim)
-coeftest(model_log, vcov = vcovHC(model_log, type = "HC1"))
-shapiro.test(residuals(model_log))
+# 5a. Word table
+ft <- flextable(tbl_coef)
+save_as_docx(ft, path = "output/Table1_Robust_MetaRegression.docx")
 
+# 5b. CSV backup
+write.csv(tbl_coef, "output/Table1_Robust_MetaRegression.csv", row.names = FALSE)
+
+# 6. Console summary ----------------------------------------------------------
+print(tbl_coef, n = Inf)
+cat("\nRobust Wald F = ", round(wald_F$F[2], 2),
+    "  (df = ", wald_F$Df[2], ",", wald_F$Res.Df[2], "),  p = ",
+    format.pval(wald_F$`Pr(>F)`[2]), "\n", sep = "")
+
+print(diag)

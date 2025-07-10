@@ -1,0 +1,68 @@
+Appendix B: R Code for Meta-Regression Analysis
+
+# ------------------------------------------------------------
+# Load required packages
+# ------------------------------------------------------------
+library(readxl)
+library(car)
+library(lmtest)
+library(sandwich)
+library(gvlma)
+
+# ------------------------------------------------------------
+# Load and inspect dataset
+# ------------------------------------------------------------
+data_path <- "path/to/Waste_Treatment_Dataset.xlsx"
+data_full <- read_excel(data_path, sheet = 1)
+
+# ------------------------------------------------------------
+# Initial model estimation
+# ------------------------------------------------------------
+model_raw <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
+                Population_Density + Average_Farm_Size +
+                Publication_Year, data = data_full)
+
+# Outlier detection using Cook's distance
+cook_raw <- cooks.distance(model_raw)
+cutoff_1 <- 4 / nrow(data_full)
+data_trim <- data_full[cook_raw < cutoff_1, ]
+
+# ------------------------------------------------------------
+# Trimmed model with robust standard errors
+# ------------------------------------------------------------
+model_trim <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
+                 Population_Density + Average_Farm_Size +
+                 Publication_Year, data = data_trim)
+
+# Robust HC1 standard errors
+coeftest(model_trim, vcov = vcovHC(model_trim, type = "HC1"))
+
+# ------------------------------------------------------------
+# Assumption diagnostics
+# ------------------------------------------------------------
+# Normality of residuals
+shapiro.test(residuals(model_trim))
+qqnorm(residuals(model_trim)); qqline(residuals(model_trim), col = 2)
+
+# Homoskedasticity
+bptest(model_trim)
+ncvTest(model_trim)
+
+# Independence
+dwtest(model_trim)
+
+# Multicollinearity
+vif(model_trim)
+
+# Linearity of predictors
+crPlots(model_trim)
+
+# ------------------------------------------------------------
+# Log-transformed model to address residual normality
+# ------------------------------------------------------------
+model_log <- lm(log(Value) ~ GDP_per_Capita + OrganicLandShare +
+                Population_Density + Average_Farm_Size +
+                Publication_Year, data = data_trim)
+coeftest(model_log, vcov = vcovHC(model_log, type = "HC1"))
+shapiro.test(residuals(model_log))
+

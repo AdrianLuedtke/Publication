@@ -1,78 +1,124 @@
-###############################################################################
-#  PhD – Chapter X  ·  Meta-regression of European Waste-Service Values
-#  Full, reproducible workflow
-###############################################################################
+# --- Packages ------------------------------------------------------
+library(readxl)       # read_excel
+library(lmtest)       # bptest, dwtest, waldtest, coeftest
+library(sandwich)     # vcovHC, vcovCL, NeweyWest
+library(car)          # ncvTest, vif
+library(strucchange)  # sctest (Rainbow)
+library(broom)        # tidy
 
-# 0. Package setup ------------------------------------------------------------
-pkgs <- c("readxl", "lmtest", "sandwich", "car", "strucchange",
-          "gvlma",  "broom", "flextable", "officer")
-to_install <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
-if (length(to_install)) install.packages(to_install)
-
-lapply(pkgs, library, character.only = TRUE)
-
-# 1. Read raw ESVD subset ------------------------------------------------------
-DATA_PATH <- "data/ESVD_Europe_raw.xlsx"   # <- adjust if needed
-d_raw     <- read_excel(DATA_PATH, sheet = 1)
-
-# 2. Two-stage influence diagnostics (Cook’s distance) -------------------------
-m0 <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
-         Population_Density + Average_Farm_Size + Publication_Year,
-         data = d_raw)
-
-cook0  <- cooks.distance(m0)
-keep_1 <- cook0 < 4 / nrow(d_raw)          # drop 1st-pass outliers (n = 47)
-d1     <- d_raw[keep_1, ]
-
-m1   <- update(m0, data = d1)
-cook1 <- cooks.distance(m1)
-keep_2 <- cook1 < 4 / nrow(d1)             # drop 2nd-pass outliers (n = 44)
-d2     <- d1[keep_2, ]                     # final dataset used in paper (n = 52)
-
-# 3. Main meta-regression (HC1 robust) ----------------------------------------
-m <- lm(Value ~ GDP_per_Capita + OrganicLandShare +
-        Population_Density + Average_Farm_Size + Publication_Year,
-        data = d2)
-
-rob_vcov <- vcovHC(m, "HC1")
-tbl_coef <- tidy(m, conf.int = TRUE, vcov = rob_vcov)
-
-wald_F <- waldtest(m, vcov = rob_vcov, test = "F")      # joint significance
-
-# 4. Diagnostics --------------------------------------------------------------
-diag <- list(
-  # Variance
-  BP   = bptest(m)$p.value,
-  NCV  = ncvTest(m)$p,
-  # Independence
-  DW   = dwtest(m)$p.value,
-  # Normality (raw + log specification)
-  SW_raw = shapiro.test(residuals(m))$p.value,
-  SW_log = shapiro.test(residuals(
-             lm(log(Value) ~ GDP_per_Capita + OrganicLandShare +
-                             Population_Density + Average_Farm_Size +
-                             Publication_Year, data = d2)))$p.value,
-  # Linearity (Rainbow default + 50 % window)
-  RB    = sctest(m, type = "Rainbow")$p.value,
-  RB_50 = sctest(m, type = "Rainbow", frac = 0.5)$p.value,
-  # Multicollinearity
-  VIF   = vif(m)
+# --- Data & Cook’s distance filter ---------------------------------
+d <- read_excel(
+  "D:/Documents/PhD/Arbeitsdateien/Dataset 2. Arbeit/Waste Treatment Data set_Outliers-Removed_Pooled_CoreVariables_Excl.BeneficiaryProxy.xlsx",
+  sheet = 1
 )
 
-# 5. Optional: export Word / CSV tables ---------------------------------------
-dir.create("output", showWarnings = FALSE)
+# Initial fit for Cook’s distance
+m0 <- lm(Value ~ GDP_per_Capita + log(OrganicLandShare + 1) +
+            Population_Density + Average_Farm_Size + Publication_Year,
+         data = d)
 
-# 5a. Word table
-ft <- flextable(tbl_coef)
-save_as_docx(ft, path = "output/Table1_Robust_MetaRegression.docx")
+# Drop high-leverage obs (Cook’s D > 4/n)
+d <- d[-which(cooks.distance(m0) > 4 / nrow(d)), ]   # n = 52
 
-# 5b. CSV backup
-write.csv(tbl_coef, "output/Table1_Robust_MetaRegression.csv", row.names = FALSE)
+# --- Main meta-regression (levels DV, HC1 robust) ------------------
+m <- lm(Value ~ GDP_per_Capita + log(OrganicLandShare + 1) +
+           Population_Density + Average_Farm_Size + Publication_Year,
+        data = d)
 
-# 6. Console summary ----------------------------------------------------------
-print(tbl_coef, n = Inf)
-cat("\nRobust Wald F = ", round(wald_F$F[2], 2),
-    "  (df = ", wald_F$Df[2], ",", wald_F$Res.Df[2], "),  p = ",
-    format.pval(wald_F$`Pr(>F)`[2]), "\n", sep = "")
+rob <- vcovHC(m, type = "HC1")
+tbl <- tidy(m, conf.int = TRUE, vcov = rob)           # β, SE_HC1, 95% CI
+adj_r2 <- summary(m)$adj.r.squared
 
-print(diag)
+# --- Robust Wald F (HC1) -------------------------------------------
+wald <- waldtest(m, vcov = rob, test = "F")           # F(5,46)
+
+# --- Newey–West HAC (lag = 2) --------------------------------------
+vcov_nw  <- NeweyWest(m, lag = 2, prewhite = FALSE)
+tbl_nw   <- tidy(m, conf.int = TRUE, vcov = vcov_nw)  
+wald_nw  <- waldtest(m, vcov = vcov_nw, test = "F")   
+
+# --- Robustness check: log(Value) spec -----------------------------
+m_log <- lm(log(Value) ~ GDP_per_Capita + log(OrganicLandShare + 1) +
+               Population_Density + Average_Farm_Size + Publication_Year,
+            data = d)
+rob_log <- vcovHC(m_log, "HC1")
+tbl_log <- tidy(m_log, conf.int = TRUE, vcov = rob_log)
+wald_log <- waldtest(m_log, vcov = rob_log, test = "F")
+
+# --- Compare signs & significance between models -------------------
+lvl <- tidy(m, vcov = rob)
+lg  <- tidy(m_log, vcov = rob_log)
+common <- intersect(lvl$term, lg$term)
+cmp <- data.frame(
+  term = common[common != "(Intercept)"],
+  same_sign = sign(coef(m)[common[common != "(Intercept)"]]) ==
+              sign(coef(m_log)[common[common != "(Intercept)"]]),
+  same_sig_5pct = (lvl$p.value[match(common, lvl$term)][-1] < 0.05) ==
+                  (lg$p.value [match(common, lg$term )][ -1] < 0.05)
+)
+
+# --- Diagnostics ---------------------------------------------------
+diag_out <- list(
+  Rainbow_23 = sctest(m, type = "Rainbow")$p.value,           # linearity h=2/3
+  Rainbow_50 = sctest(m, type = "Rainbow", frac = 0.5)$p.value,# linearity h=1/2
+  BP         = bptest(m)$p.value,                             # homoskedasticity
+  NCV        = ncvTest(m)$p,                                  # alt. variance test
+  DW         = dwtest(m)$p.value,                             # autocorrelation
+  VIF        = vif(m),                                        # multicollinearity
+  SW_levels  = shapiro.test(residuals(m))$p.value,            # normality (levels DV)
+  SW_logDV   = shapiro.test(residuals(m_log))$p.value         # normality (log DV)
+)
+
+# --- Study-clustered SEs (optional) -------------------------------
+if ("StudyID" %in% names(d)) {
+  cl_vcov <- vcovCL(m, cluster = d$StudyID, type = "HC1")
+  clustered_tbl <- tidy(m, conf.int = TRUE, vcov = cl_vcov)
+} else {
+  clustered_tbl <- NULL
+}
+
+# --- Leave-one-out (LOSO) stability -------------------------------
+groups <- if ("StudyID" %in% names(d)) unique(d$StudyID) else seq_len(nrow(d))
+
+loso <- lapply(groups, function(g) {
+  d_sub <- if ("StudyID" %in% names(d)) subset(d, StudyID != g) else d[-g, ]
+  fit   <- try(lm(Value ~ GDP_per_Capita + log(OrganicLandShare + 1) +
+                    Population_Density + Average_Farm_Size + Publication_Year, 
+                  data = d_sub), silent = TRUE)
+  
+  if (inherits(fit, "try-error")) {
+    return(data.frame(GDPpc = NA, p_GDPpc = NA))
+  }
+  
+  hc1 <- vcovHC(fit, "HC1")
+  out <- coeftest(fit, vcov = hc1)
+  
+  data.frame(
+    GDPpc    = if ("GDP_per_Capita" %in% names(coef(fit))) coef(fit)["GDP_per_Capita"] else NA,
+    p_GDPpc  = if ("GDP_per_Capita" %in% rownames(out)) out["GDP_per_Capita", "Pr(>|t|)"] else NA
+  )
+})
+
+loso_df <- do.call(rbind, loso)
+
+loso_summary <- list(
+  GDPpc_min = min(loso_df$GDPpc, na.rm = TRUE),
+  GDPpc_max = max(loso_df$GDPpc, na.rm = TRUE),
+  p_min     = min(loso_df$p_GDPpc, na.rm = TRUE),
+  p_max     = max(loso_df$p_GDPpc, na.rm = TRUE)
+)
+
+# --- Output --------------------------------------------------------
+list(
+  Coefficients_levels  = tbl,
+  Adjusted_R2_levels   = adj_r2,
+  Wald_F_levels        = wald,
+  Coefficients_logDV   = tbl_log,
+  Wald_F_logDV         = wald_log,
+  Coefficients_HAC     = tbl_nw,
+  Wald_F_HAC           = wald_nw,
+  Significance_check   = cmp,
+  Diagnostics          = diag_out,
+  Clustered_SEs        = clustered_tbl,
+  LOSO_summary         = loso_summary
+)

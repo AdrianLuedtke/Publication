@@ -1,6 +1,5 @@
-# ==================================================================
+
 # Supplementary 4E: Master Workflow Script
-# ==================================================================
 
 # --- Packages ------------------------------------------------------
 library(readxl)       # read_excel
@@ -13,9 +12,7 @@ library(ggplot2)      # plots
 library(dplyr)        # summaries
 library(moments)      # skewness, kurtosis
 
-# ==================================================================
 # S1. Data preparation & filtering
-# ==================================================================
 d <- read_excel(
   "D:/Documents/PhD/Arbeitsdateien/Dataset 2. Arbeit/
    Waste Treatment Data set_Outliers-Removed_Pooled_CoreVariables_Excl.BeneficiaryProxy.xlsx",
@@ -34,9 +31,7 @@ d <- d[-which(cooks.distance(m0) > 4 / nrow(d)), ]
 yr_mean <- mean(d$Publication_Year, na.rm = TRUE)
 d$Publication_Year_c <- d$Publication_Year - yr_mean
 
-# ==================================================================
 # S2. Core regression models
-# ==================================================================
 m <- lm(Value ~ GDP_per_Capita + log(OrganicLandShare + 1) +
            Population_Density + Average_Farm_Size + Publication_Year_c,
         data = d)
@@ -70,9 +65,7 @@ cmp <- data.frame(
                   (lg$p.value [match(common, lg$term)][-1] < 0.05)
 )
 
-# ==================================================================
 # S3. Diagnostics & robustness
-# ==================================================================
 diag_out <- list(
   Rainbow_23 = sctest(m, type = "Rainbow")$p.value,
   Rainbow_50 = sctest(m, type = "Rainbow", frac = 0.5)$p.value,
@@ -115,9 +108,7 @@ loso_summary <- list(
   p_max     = max(loso_df$p_GDPpc, na.rm = TRUE)
 )
 
-# ==================================================================
 # S4. Predictive validation (LOOCV)
-# ==================================================================
 n <- nrow(d)
 preds <- errors <- numeric(n)
 for (i in 1:n) {
@@ -135,9 +126,7 @@ summary_stats <- results_loocv %>%
             RMSE = sqrt(mean(Error^2)),
             MAE = mean(abs(Error)))
 
-# ==================================================================
 # S5. Case study predictions
-# ==================================================================
 x_bav <- data.frame(GDP_per_Capita=48247, OrganicLandShare=0.123,
                     Population_Density=316, Average_Farm_Size=37.0,
                     Publication_Year_c=0)
@@ -148,9 +137,7 @@ x_bw  <- data.frame(GDP_per_Capita=50289, OrganicLandShare=0.121,
 pred_bav <- predict(m, newdata = x_bav, se.fit = TRUE)
 pred_bw  <- predict(m, newdata = x_bw, se.fit = TRUE)
 
-# ==================================================================
 # S6. Descriptives & figures
-# ==================================================================
 
 # Outcome distribution
 x <- d$Value
@@ -174,9 +161,7 @@ p1 <- ggplot(d, aes(x = Value)) +
        title = "Distribution of outcome values")
 ggsave("S6_hist_density.png", p1, width = 6, height = 4, dpi = 300)
 
-# ==================================================================
 # Final output list
-# ==================================================================
 Master_Output <- list(
   N                  = nrow(d),
   Year_mean_used     = round(yr_mean, 2),
